@@ -1,6 +1,6 @@
 # Sela
 
-A fully autonomous AI agent that lives in your WhatsApp. Built with [Baileys](https://github.com/WhiskeySockets/Baileys) for WhatsApp connectivity and Claude (via the official CLI) for intelligence. Sela doesn't just respond to messages — it proactively manages goals, monitors its own health, learns from outcomes, and adapts its behavior based on context and trust.
+A fully autonomous AI agent that lives in your WhatsApp. Built with [Baileys](https://github.com/WhiskeySockets/Baileys) for WhatsApp connectivity and Claude for intelligence. Sela doesn't just respond to messages — it proactively manages goals, writes code, generates 3D game assets, manages a football team, monitors its own health, learns from outcomes, and adapts its behavior based on context and trust.
 
 Single-user, always-on. Designed to run your life from your phone.
 
@@ -8,7 +8,7 @@ Single-user, always-on. Designed to run your life from your phone.
 
 ## Architecture Overview
 
-Sela is built as a **signal-driven autonomous agent** with two independent processing paths:
+Sela is a **signal-driven autonomous agent** with two independent processing paths and a multi-server MCP backbone connecting to external tools (Blender, Unreal Engine, video processing, semantic memory, and more).
 
 ```
                          ┌──────────────────────────────┐
@@ -39,22 +39,35 @@ Sela is built as a **signal-driven autonomous agent** with two independent proce
  ┌─────────────────────────────────────────────────────────────────┐
  │                  Agent Loop (every 10 min)                      │
  │                                                                 │
- │  1. Signal Collection ──> core + module detectors, zero LLM     │
+ │  1. Signal Collection ──> 23+ detectors (core + modules)        │
  │  2. Cooldown Filter ───> per-signal-type dedup                  │
  │  3. pickSignals() ─────> top 2, max 1 Sonnet, age escalation   │
  │  4. Prompt Assembly ───> briefs + memory + context + modules    │
- │  5. Claude Reasoning ──> Haiku (routine) / Sonnet (code+high)  │
- │  6. Parse & Execute ───> goals, messages, tools, chains         │
+ │  5. Claude Reasoning ──> Haiku (routine) / Sonnet/Opus (code)  │
+ │  6. Parse & Execute ───> goals, messages, tools, chains, code   │
  │  7. Writeback ─────────> state timestamps, recent-actions log   │
  │  8. Decision Tracking ─> log decisions, link outcomes, learn    │
+ └────────────────┬────────────────────────────────────────────────┘
+                  │
+                  v
+ ┌─────────────────────────────────────────────────────────────────┐
+ │              MCP Gateway (7 servers)                             │
+ │                                                                 │
+ │  Vestige ─── semantic memory + fact ingestion                   │
+ │  QMD ─────── GPU-accelerated code search (BM25 + vector)        │
+ │  Blender ─── 3D asset generation + rendering                    │
+ │  Unreal ──── UE5 Editor automation (TCP bridge)                 │
+ │  VFX ─────── video processing (ffmpeg)                          │
+ │  Hattrick ── football team management (browser automation)      │
+ │  Scrapling ─ web scraping                                       │
  └─────────────────────────────────────────────────────────────────┘
 ```
 
 ### Two Processing Paths
 
-**Reactive path** — A WhatsApp message arrives, gets debounced (2 seconds to handle edits/bursts), routed through the NLU classifier (18 intents, Hebrew + English, zero LLM cost). If matched, handled instantly. Otherwise, forwarded to Claude with conversation history, memory context, and available tools.
+**Reactive path** — A WhatsApp message arrives, gets debounced (2 seconds), routed through the NLU classifier (18 intents, Hebrew + English, zero LLM cost). If matched, handled instantly. Otherwise, forwarded to Claude with conversation history, memory context, and available tools.
 
-**Proactive path** — The agent loop runs independently every 10 minutes. It scans signal detectors (core + any loaded modules), filters through cooldowns, picks the top 2 most urgent signals, builds a context-rich prompt, and lets Claude decide what to do. The agent can send messages, advance goals, trigger tools, create workflows, and learn from outcomes — all without any user input.
+**Proactive path** — The agent loop runs independently every 10 minutes. It scans 23+ signal detectors, filters through cooldowns, picks the top 2 most urgent signals, builds a context-rich prompt, and lets Claude decide what to do. The agent can send messages, advance goals, write code, generate 3D assets, trigger tools, create workflows, and learn from outcomes — all without any user input.
 
 ---
 
@@ -62,14 +75,14 @@ Sela is built as a **signal-driven autonomous agent** with two independent proce
 
 The core of Sela's autonomy. Signals are **zero-cost detectors** — pure JavaScript checks against local state. No LLM calls until signals are collected and a cycle is triggered.
 
-### How Signals Flow
+### Signal Flow
 
 ```
-detectAll() ──> core detectors + module detectors produce raw signals
+collectSignals() ──> core detectors + module detectors produce raw signals
      │
      v
-applyCooldowns() ──> dedup by signal key (type + goal/cron/topic)
-     │                 low=3h, medium=1h, high/critical=0
+filterCooldowns() ──> dedup by signal key (type + goal/cron/topic)
+     │                  low=3h, medium=1h, high/critical=0
      v
 pickSignals() ──> max 2 per cycle, max 1 Sonnet-tier
      │              age-based escalation: 4+ days overdue → low→medium
@@ -77,21 +90,21 @@ pickSignals() ──> max 2 per cycle, max 1 Sonnet-tier
 buildAgentPrompt() ──> assembles context block:
      │   - date/time + quiet hours flag
      │   - signal summaries with urgency tags
-     │   - active goals
+     │   - active goals + milestone briefs
      │   - module context providers (weekly plans, etc.)
-     │   - module brief builders (signal-specific prompts)
-     │   - recent actions (cross-cycle dedup)
      │   - learning context + reasoning journal
      │   - error analytics (if error_spike)
+     │   - available tools list
      v
-Claude (Haiku or Sonnet) ──> reasons, decides, acts
+Claude (Haiku or Sonnet/Opus) ──> reasons, decides, acts
      │
      v
 parseAgentResponse() ──> extracts structured tags:
-     <wa_message>    → send WhatsApp message to the user
+     <wa_message>    → send WhatsApp message
      <action_taken>  → log what was done
      <goal_update>   → advance a milestone
      <goal_create>   → create new goal
+     <tool_call>     → invoke registered tool
      <followup>      → schedule a check-in
      <reflection>    → self-assessment
      <hypothesis>    → reasoning journal entry
@@ -106,10 +119,95 @@ parseAgentResponse() ──> extracts structured tags:
 | `stale_goal` | low | Goal idle >7 days |
 | `idle_conversation` | low | No messages in active thread |
 | `cron_due` | medium | Cron job ready to fire |
-| `error_spike` | high | 3+ errors in short window |
-| ...and more | | Goal deadlines, chain steps, anomalies |
+| `error_spike` | high | 10+ errors/hour (2x spike vs baseline) |
+| `anomaly` | high | 3+ agent cycle errors in 1 hour |
+| `transfer_deadline` | critical | Hattrick auction expiring within 30 min |
+| `asset_generation` | medium | Pending 3D assets in manifest |
+| `chain_opportunity` | medium | 3+ signals relate to same goal |
+| `self_improvement` | low | Recurring error pattern (5+ times) |
+| `pattern_observed` | low | Topic mentioned on 3+ different days |
+| `plan_stuck` | medium | Workflow step stalled >2 hours |
+| `user_disengaged` | high | Correlated: stale goals + conversation gap |
 
-Modules can register additional signal types (see [Module System](#module-system)).
+Modules can register additional signal types via the module system.
+
+---
+
+## Auto-Coder
+
+The autonomous code implementation engine. When the agent loop detects a goal with code-related milestones, the auto-coder takes over:
+
+1. **Milestone selection** — `pickMilestone()` finds the next pending milestone from the highest-priority active goal
+2. **Brief generation** — `buildMilestoneBrief()` produces a concrete implementation prompt with file paths, patterns to follow, and integration requirements
+3. **Implementation** — Sonnet/Opus writes the code via tool bridge (`file_read`, `file_write`, `shell_exec`)
+4. **Verification** — `runTests()` runs the project's test suite to validate changes
+5. **Commit** — `commitAndReport()` creates a git commit and sends a Telegram notification
+
+The auto-coder is responsible for implementing all Shattered Crown game systems, managing the asset pipeline code, and any other code-heavy goal milestones.
+
+---
+
+## Asset Pipeline
+
+Autonomous 3D asset generation for game projects. Reads a declarative manifest, generates assets in Blender via MCP, and exports to FBX.
+
+### How It Works
+
+```
+asset-manifest.json ──> 54 assets across 9 regions
+        │
+        v
+detectAssetGeneration() ──> signal fires every 30 min when pending assets exist
+        │
+        v
+Agent brain calls <tool_call name="generate_asset">
+        │
+        v
+generateOneAsset() ──> asset-pipeline.js
+        │
+        ├── 1. Clear Blender scene
+        ├── 2. Generate geometry (region palette, poly budget, PBR materials)
+        ├── 3. Export to FBX (UE5-compatible: -Y forward, Z up)
+        └── 4. Update manifest status
+```
+
+### Manifest Structure
+
+Each asset specifies region, type (hero/prop/environment/foliage), description, color palette, and poly budget. The pipeline generates procedural Blender Python code tailored to the asset type — trees, rocks, shrines, chests, gates, mushrooms, and more.
+
+### Tools
+
+| Tool | Description |
+|------|-------------|
+| `generate_asset` | Generate next pending asset from manifest (calls Blender MCP) |
+| `asset_progress` | Get pipeline status: total, completed, pending, failed, percent |
+
+---
+
+## MCP Gateway
+
+Multi-server Model Context Protocol gateway. Connects to any MCP-compatible server defined in `mcp-config.json`. Lazy connections (spawned on first use), per-server circuit breakers, automatic reconnection with exponential backoff.
+
+### Connected Servers
+
+| Server | Transport | Purpose |
+|--------|-----------|---------|
+| **Vestige** | stdio | Semantic memory — fact ingestion, search, dedup |
+| **QMD** | stdio | GPU-accelerated codebase search (BM25 + vector + reranking) |
+| **Blender** | stdio | 3D modeling — execute Python in Blender, render, export FBX |
+| **Unreal** | stdio→TCP | UE5 Editor automation — actors, levels, blueprints (port 55557) |
+| **VFX** | stdio | Video processing — trim, resize, concat, filters, chroma key |
+| **Hattrick** | stdio | Football team management — browser automation for Hattrick.org |
+| **Scrapling** | stdio | Web scraping with anti-detection |
+
+```javascript
+// Call any MCP server tool
+import { callTool } from './lib/mcp-gateway.js';
+
+await callTool('blender', 'execute_blender_code', { code: 'import bpy; ...' });
+await callTool('vestige', 'search', { query: 'user preferences' });
+await callTool('qmd', 'search', { query: 'auth middleware', limit: 10 });
+```
 
 ---
 
@@ -119,185 +217,97 @@ The main brain. Runs every 10 minutes (configurable), operates completely indepe
 
 ### Cycle Anatomy
 
-1. **Signal collection** — All core detectors + module detectors run. Pure JS, no API calls. Reads goals.json, SQLite state, module snapshots, error logs.
-
-2. **Cooldown filtering** — Each signal gets a unique key (e.g., `goal_work:abc123`). If the same key fired recently (3h for low, 1h for medium, 0 for high/critical), it's suppressed.
-
-3. **Signal picking** — `pickSignals()` selects the top 2 signals by urgency. At most 1 signal can require Sonnet (expensive). Overdue signals get urgency-escalated (>4 days overdue: low→medium).
-
-4. **Prompt assembly** — Builds a rich `<context>` block with:
-   - Module context providers (weekly plans, etc.)
-   - Recent actions buffer (last 10 actions, prevents duplicates)
-   - Module briefs with error handling instructions
-   - Learning context from past cycles
-   - Reasoning journal (open hypotheses)
-   - Historical decision patterns
-
-5. **Claude reasoning** — Configurable per path: WhatsApp uses `CLAUDE_MODEL` (default Sonnet), agent loop uses `AGENT_LOOP_SONNET_MODEL` (can be set to Opus for higher-quality autonomous work). 30-minute timeout for MCP operations.
-
-6. **Response parsing** — Extracts structured XML tags from Claude's response. Each tag triggers specific actions (send message, update goal, record learning, etc).
-
-7. **State writeback** — Updates signal timestamps (core + module state key maps), records actions in cross-cycle memory, links decision outcomes.
+1. **Signal collection** — All core detectors + module detectors run. Pure JS, no API calls.
+2. **Cooldown filtering** — Each signal gets a unique key. Same key fired recently? Suppressed.
+3. **Signal picking** — `pickSignals()` selects top 2 by urgency. Max 1 Sonnet-tier. Overdue signals get escalated.
+4. **Prompt assembly** — Context block with module providers, recent actions, milestone briefs, learning context, reasoning journal, error analytics.
+5. **Claude reasoning** — Haiku for routine, Sonnet/Opus for code and high-urgency signals.
+6. **Response parsing** — Extracts structured XML tags. Each tag triggers specific actions.
+7. **State writeback** — Updates timestamps, records actions, links decision outcomes.
 
 ### Model Selection
 
 | Condition | Model | Why |
 |-----------|-------|-----|
-| Any signal is high/critical urgency | Sonnet | Better reasoning for complex decisions |
-| Goal work involves code keywords | Sonnet | Code generation quality |
-| Followup with code topic | Sonnet | Same |
+| High/critical urgency signal | Sonnet/Opus | Better reasoning for complex decisions |
+| Goal work involves code keywords | Sonnet/Opus | Code generation quality |
 | Signal type in module's `sonnetSignalTypes` | Sonnet | Module-declared complex work |
-| Everything else | Haiku | 10x cheaper, fast enough for routine tasks |
+| Everything else | Haiku | 10x cheaper, fast enough for routine |
 
 ### Quiet Hours (23:00-08:00)
 
-During quiet hours:
 - No WhatsApp messages sent
-- Agent loop interval extends to 60 minutes (saves cost)
-- **Exception**: Module urgent work (via `hasUrgentWork()`) bypasses quiet hours
+- Agent loop interval extends to 60 minutes
+- **Exception**: Module urgent work bypasses quiet hours
 - **Exception**: Critical signals keep 10-minute interval
 
 ---
 
 ## Module System
 
-Sela supports **optional modules** that extend the agent's capabilities without modifying core code. Modules are dynamically discovered at startup from `modules/*/index.js`.
-
-### How It Works
-
-```
-startup ──> loadModules() scans modules/*/index.js
-                │
-                v
-         dynamic import() each module manifest
-                │
-                v
-         register into module-loader registry:
-           - signal detectors
-           - brief builders
-           - context providers
-           - API routes
-           - dashboard pages
-           - message categories
-           - state key maps
-           - Sonnet signal types
-           - urgent work checkers
-```
-
-If the `modules/` directory is empty or missing, Sela runs cleanly with zero errors — all accessor functions return empty collections.
+Optional modules extend the agent without modifying core code. Dynamically discovered at startup from `modules/*/index.js`.
 
 ### Module Manifest
-
-Each module exports a default object with a standard interface:
 
 ```javascript
 // modules/my-module/index.js
 export default {
   name: 'my-module',
-
-  // Signal detection — called every agent cycle (must be zero-cost)
   detectSignals: (state) => [{ type: 'my_signal', urgency: 'low', summary: '...' }],
-
-  // Brief builders — generate context prompts for specific signal types
-  briefBuilders: {
-    my_signal: (signal) => '## My Module Brief\n...',
-  },
-
-  // Context providers — functions injected into every agent cycle prompt
-  contextProviders: [() => '## My Module Plan\n...'],
-
-  // Signal types that require Sonnet (expensive model)
+  briefBuilders: { my_signal: (signal) => '## Brief\n...' },
+  contextProviders: [() => '## Context\n...'],
   sonnetSignalTypes: ['my_complex_signal'],
-
-  // State writeback — maps signal types to state timestamp fields
   stateKey: 'my-module-state',
-  stateKeyMap: {
-    my_signal: 'lastMySignalAt',
-  },
-
-  // Message categorization — prefix → category for routing
-  signalPrefix: 'my_',
-  messageCategory: 'my-module',
-
-  // Urgent work checker — bypasses quiet hours if true
+  stateKeyMap: { my_signal: 'lastMySignalAt' },
   hasUrgentWork: () => false,
-
-  // API routes — registered on the dashboard HTTP server
-  apiRoutes: [
-    { method: 'GET', path: '/my-module', handler: (req, res, ctx) => { ... } },
-  ],
-
-  // Dashboard page — adds a nav link + page to the web dashboard
-  dashboard: {
-    path: '/my-module',
-    title: 'My Module',
-    icon: '&#128736;',
-    html: '<html>...</html>',
-  },
+  apiRoutes: [{ method: 'GET', path: '/my-module', handler: (req, res, ctx) => {} }],
+  dashboard: { path: '/my-module', title: 'My Module', icon: '&#128736;', html: '<html>...</html>' },
 };
 ```
 
-All fields are optional. A module can implement just `detectSignals` and nothing else.
+All fields optional. Modules plug into 7 integration points: signal detection, brief injection, context injection, model selection, state writeback, quiet hours bypass, and message routing.
 
-### Module Loader API
+### Included Module: Hattrick
 
-Core files never import modules directly. Instead, they use accessor functions from `lib/module-loader.js`:
+Autonomous football team management for [Hattrick.org](https://hattrick.org):
 
-```javascript
-import { loadModules } from './lib/module-loader.js';
-import {
-  getModuleSignalDetectors,    // → [detectFn, ...]
-  getModuleBriefBuilders,      // → { signalType: builderFn, ... }
-  getModuleContextProviders,   // → [providerFn, ...]
-  getModuleSonnetSignalTypes,  // → Set of signal type strings
-  getModuleStateKeyMaps,       // → [{ stateKey, map }, ...]
-  getModuleApiRoutes,          // → [{ method, path, handler }, ...]
-  getModuleDashboardPages,     // → [{ path, title, icon, html }, ...]
-  getModuleMessageCategories,  // → { 'prefix_': 'category', ... }
-  checkModuleUrgentWork,       // → boolean
-  getLoadedModules,            // → ['module-name', ...]
-} from './lib/module-loader.js';
-
-// Called once at startup before the agent loop begins
-await loadModules();
-```
-
-### Integration Points
-
-Modules plug into the agent loop at 7 points:
-
-| Integration | How | When |
-|------------|-----|------|
-| **Signal detection** | `getModuleSignalDetectors()` called by `detectModuleSignals()` | Every cycle |
-| **Brief injection** | `getModuleBriefBuilders()` matched by signal type | When module signal picked |
-| **Context injection** | `getModuleContextProviders()` called during prompt assembly | Every cycle |
-| **Model selection** | `getModuleSonnetSignalTypes()` merged into Sonnet-tier set | When picking model |
-| **State writeback** | `getModuleStateKeyMaps()` used to write timestamps after actions | After cycle |
-| **Quiet hours bypass** | `checkModuleUrgentWork()` checked during quiet hours | Quiet hours only |
-| **Message routing** | `getModuleMessageCategories()` used for prefix→category lookup | During message categorization |
-
-### Creating a Module
-
-1. Create `modules/your-module/index.js` with a default export
-2. Implement the fields you need (all optional)
-3. Restart Sela — the module is auto-discovered
-
-No changes to core files needed. The module system is designed so that adding or removing a module folder is the only step required.
+- 20+ signal detectors (match prep, post-match analysis, transfer watch, training, economy)
+- Weekly planning with formation optimization
+- Transfer market scouting and bidding (with financial safety limits)
+- Training optimization based on player skills and age
+- Full dashboard page with team overview
 
 ---
 
-## Cross-Cycle Memory
+## Project System
 
-The agent maintains a rolling buffer of recent actions (last 24h, max 50 entries) in `kv_state['recent-actions']`. Every cycle, the 10 most recent actions are injected into the prompt:
+Sela can onboard and manage entire software projects:
 
-```
-## Recent actions (avoid duplicating):
-- [economy_check] Economy not checked in 24h (2h ago)
-- [action] Sent economy report to the user via WhatsApp (2h ago)
-- [training_check] Training not checked in 24h (5h ago)
-```
+1. **Brief decomposition** — Describe a project in plain text. Haiku decomposes it into goals + milestones.
+2. **Workspace creation** — Creates `workspace/<project>/` with QMD auto-indexing for code search.
+3. **Autonomous implementation** — Auto-coder picks milestones and implements them.
+4. **Progress tracking** — Goals + milestones tracked in SQLite with status, completion timestamps.
 
-This prevents the agent from re-running the same checks and gives it awareness of what it recently did.
+### Active Project: The Shattered Crown
+
+A UE5 dark fantasy action-adventure game. 129 source files, 14 subsystems:
+
+| System | Description |
+|--------|-------------|
+| GAS Combat | Melee + shard powers via Gameplay Ability System |
+| Corruption | 5-tier corruption mechanic affecting player/world |
+| Companion AI | Lira companion with follow/combat/combo behaviors |
+| Boss Encounters | Multi-phase boss fights with arena mechanics |
+| Dialogue | Condition-based branching dialogue trees |
+| Region System | 7 biome regions with streaming + difficulty scaling |
+| Quest Manager | Quest tracking, objectives, rewards |
+| Shard Skill Trees | Skill progression and crafting |
+| Dynamic Difficulty | Adaptive difficulty based on player performance |
+| Save/Load | Checkpoint + manual save with slot management |
+| Build Pipeline | CI/CD with platform abstraction (Win64/PS5/XSX) |
+| HUD + UI | CommonUI-based menus, HUD, inventory |
+| Performance Budget | Frame time tracking, memory budgets, LOD management |
+| 3D Asset Pipeline | 54 assets auto-generated via Blender MCP |
 
 ---
 
@@ -305,19 +315,18 @@ This prevents the agent from re-running the same checks and gives it awareness o
 
 Three interconnected learning mechanisms:
 
-### Learning Journal (`learning-journal.js`)
+### Learning Journal
 - Structured entries: `{ action, context, outcome, lesson }`
-- Weekly Haiku synthesis → extracts actionable rules
+- Weekly Haiku synthesis extracts actionable rules
 - Rules ingested into Vestige for long-term memory
-- Injected into agent prompt as learning context
 
-### Reasoning Journal (`reasoning-journal.js`)
+### Reasoning Journal
 - Open hypotheses with evidence tracking
 - Conclusions with confidence scores
 - Auto-pruned after 7 days
 - Gives the agent multi-cycle reasoning chains
 
-### Agent Learning (`agent-learning.js`)
+### Agent Learning
 - Reflection cycle: analyzes errors, costs, signal resolution
 - Goal momentum tracking
 - Pattern extraction from past cycles
@@ -331,18 +340,17 @@ Three interconnected learning mechanisms:
 - Personality defined in `SOUL.md` (auto-rewritten weekly based on engagement)
 - Per-conversation history with compression at 40 messages
 - Media handling (images, voice, documents)
-- Semantic memory via Vestige MCP (facts extracted per-conversation)
+- Semantic memory via Vestige MCP
 
 ### Telegram (Alerts + Commands)
-- Real-time alerts: errors, agent actions, cost warnings
+- Real-time alerts: errors, agent actions, cost warnings, milestone completions
 - Remote commands: `/status`, `/shutdown`, `/cron`, `/cost`, `/memory`, `/recap`, `/notes`, `/help`
 
-### Web Dashboard (Control Center)
+### Web Dashboard
 - Real-time WebSocket updates at `http://localhost:4242`
 - System status, agent loop monitor, cost analytics
-- Cron manager (view, toggle, trigger)
-- Memory browser
-- Module pages (dynamically added by loaded modules)
+- Cron manager, project browser, memory browser
+- Module pages (dynamically added)
 
 ---
 
@@ -352,95 +360,85 @@ Three interconnected learning mechanisms:
 
 | Module | What It Does |
 |--------|-------------|
-| `agent-loop.js` | Main brain. 10-min cycle: collect signals → pick top 2 → build prompt → Claude reasons → parse response → execute actions → writeback state. Handles model selection (Haiku/Sonnet), quiet hours. |
-| `agent-brain.js` | Pattern recognition on top of the loop. Trust-gated proposals, behavior adaptation based on response outcomes. |
-| `agent-signals.js` | Core zero-cost signal detectors + `detectModuleSignals()` for module-registered detectors. |
-| `agent-learning.js` | Reflection cycle — analyzes errors, costs, signal resolution rates, goal momentum. Produces `<learning>` block for prompt injection. |
-| `module-loader.js` | Dynamic module discovery and registry. Scans `modules/*/index.js` at startup. All accessor functions return empty collections when no modules loaded. |
+| `agent-loop.js` | Main brain. 10-min cycle: signals → prompt → Claude → parse → execute → learn. |
+| `agent-brain.js` | Pattern recognition, trust-gated proposals, behavior adaptation. |
+| `agent-signals.js` | 23+ zero-cost signal detectors including asset generation and transfer deadlines. |
+| `agent-learning.js` | Reflection cycle — errors, costs, signal resolution, goal momentum. |
+| `module-loader.js` | Dynamic module discovery and registry from `modules/*/index.js`. |
+| `auto-coder.js` | Autonomous milestone implementation: pick → brief → code → test → commit. |
+| `asset-pipeline.js` | 3D asset generation: manifest → Blender MCP → FBX export → manifest update. |
+| `projects.js` | Project onboarding: brief → goals + milestones → workspace + QMD indexing. |
 
 ### Communication
 
 | Module | What It Does |
 |--------|-------------|
-| `whatsapp.js` | Baileys socket management. Message routing, media handling, connection recovery (405 loop protection, auth clear cap). |
-| `claude.js` | Claude CLI orchestration. Spawns `claude` processes with MCP tools, manages sessions, tracks costs per call. `chatOneShot()` for single prompts, `spawnClaude()` for interactive sessions. |
-| `claude-persistent.js` | Keeps two Claude CLI processes alive (WhatsApp + agent loop). Messages piped via stdin for sub-second responses. Auto-respawn on crash. Separate processes for cache isolation. |
-| `telegram.js` | Two-way Telegram bot. Sends alerts, receives commands, parses inline queries. |
-| `bot-ipc.js` | HTTP + WebSocket server. Dashboard API endpoints, agent-loop trigger, dynamic module route dispatch. |
+| `whatsapp.js` | Baileys socket — message routing, media, connection recovery. |
+| `claude.js` | Claude CLI orchestration — `chatOneShot()` for single prompts. |
+| `claude-persistent.js` | Two persistent Claude processes (WhatsApp + agent loop). Sub-second responses. |
+| `telegram.js` | Two-way Telegram bot — alerts and remote commands. |
+| `bot-ipc.js` | HTTP + WebSocket server for dashboard and agent-loop triggers. |
 
 ### Intelligence
 
 | Module | What It Does |
 |--------|-------------|
-| `nlu-router.js` | Local intent classifier. 18 intents in Hebrew + English. Pattern matching — zero LLM cost. Handles: status, help, cost, cron, goal, memory, search, remind, and more. |
-| `prompt-assembler.js` | Three-tier dynamic prompt (minimal ~2KB / standard ~5KB / full ~12KB). Auto-selects based on message complexity and cost pressure. |
-| `tool-bridge.js` | Tool registry. Auto-discovers skill companions from `skills/*.js`. Parses Claude's tool call XML, executes against registered handlers (file I/O, HTTP, shell). Rate-limited. |
-| `projects.js` | Project onboarding and management. Decomposes briefs into goals + milestones via Haiku. Auto-registers QMD collections for new projects. Import existing folders as projects. |
-| `mcp-gateway.js` | Multi-server MCP gateway. Connects to any server in `mcp-config.json` (Vestige, QMD, etc). Lazy connections, per-server circuit breakers, reconnection with backoff. Vestige: semantic memory search, smart ingestion with dedup. QMD: GPU-accelerated codebase search (BM25 + vector + reranking). |
-| `pain-point-analyzer.js` | Detects chronic errors, WhatsApp instability, and transfer deadline urgency. Runs every 6h via agent loop. |
-| `skill-generator.js` | Dynamic skill document generation from templates + context. |
+| `nlu-router.js` | 18-intent classifier (Hebrew + English). Zero LLM cost. |
+| `prompt-assembler.js` | Three-tier dynamic prompt (minimal/standard/full). |
+| `tool-bridge.js` | Tool registry with 5 built-in tools + skill companion auto-discovery. |
+| `mcp-gateway.js` | Multi-server MCP gateway — 7 servers, lazy connect, circuit breakers. |
+| `chain-planner.js` | Multi-step workflow decomposition — 5 templates + LLM fallback. |
 
 ### Autonomy
 
 | Module | What It Does |
 |--------|-------------|
-| `trust-engine.js` | Per-action-type trust scores (success rate × recency × volume). Four levels: always-ask → auto-execute. Destructive actions hard-capped at Level 1. |
-| `chain-planner.js` | Multi-step workflow decomposition. 5 built-in templates + LLM fallback. Conditional branching, rollback on failure. |
-| `workflow-engine.js` | Stateful DAG execution. Pause/resume, user input gates, trust-gated steps. |
-| `confidence-gate.js` | Gates agent actions through confidence thresholds before execution. |
-| `behavior-adaptor.js` | Maps context signals to behavior modifiers (suppress/encourage proactive actions). |
+| `trust-engine.js` | Per-action trust scores. Four levels: always-ask → auto-execute. |
+| `workflow-engine.js` | Stateful DAG execution with pause/resume and user input gates. |
+| `confidence-gate.js` | Gates actions through confidence thresholds. |
+| `behavior-adaptor.js` | Maps context signals to behavior modifiers. |
 
 ### Memory & State
 
 | Module | What It Does |
 |--------|-------------|
-| `goals.js` | Goal CRUD with milestones, priority sorting, deadline alerts. Goals are the primary driver of the agent's proactive work. |
-| `crons.js` | Cron job scheduler. Quiet-hour suppression, error tracking, engagement analytics. |
-| `history.js` | Per-conversation history. Auto-compresses at 40 messages. Persistent across restarts. |
-| `memory-index.js` | Unified search across Vestige, tiered memory, goals, and user notes. |
+| `goals.js` | Goal CRUD with milestones, priority sorting, deadline alerts. |
+| `crons.js` | Cron job scheduler with quiet-hour suppression. |
 | `memory-tiers.js` | T1/T2/T3 weighted memory with decay and spaced repetition. |
-| `state.js` | Key-value state in SQLite. Used by agent loop, modules, signals, and cross-cycle memory. |
-| `context-gate.js` | Token budget management. Dedup, tier-aware scaling, prevents prompt bloat. |
+| `memory-guardian.js` | 5-tier heap monitoring with graduated response up to auto-restart. |
+| `state.js` | Key-value state in SQLite. |
 
 ### Operations
 
 | Module | What It Does |
 |--------|-------------|
-| `error-recovery.js` | Error classification (transient/persistent/fatal). Contextual retry with exponential backoff. Escalates to Telegram (3+) and WhatsApp (5+) on repeat same-root-cause. |
-| `cost-analytics.js` | Per-call token cost tracking. Daily/weekly/monthly rollups. Budget alerts. |
-| `learning-journal.js` | Structured outcome entries + weekly Haiku rule synthesis. |
-| `reasoning-journal.js` | Multi-cycle hypothesis tracking with evidence and conclusions. |
-| `outcome-tracker.js` | Proposal sentiment, cron engagement, goal retrospectives. |
-| `self-review.js` | Weekly SOUL.md personality rewrite based on engagement data, with rollback safety. |
-| `watchdog.js` | Separate PM2 process. Pings `/healthz` every 5 minutes. Zombie process detection — scans logs every 60s for duplicate PIDs in WhatsApp 440 reconnect loops, auto-kills zombies, sends Telegram alert. |
-| `memory-guardian.js` | 5-tier heap monitoring with graduated response (normal → warn → pressure → critical → restart). |
+| `error-recovery.js` | Error classification + contextual retry. Circuit breaker (3 failures/5min). |
+| `cost-analytics.js` | Per-call token cost tracking. Daily/weekly/monthly rollups. |
+| `watchdog.js` | Separate PM2 process. Health pings + zombie detection. |
 
 ---
 
-## Skills
+## Tool Bridge
 
-13 markdown skill documents + executable JS companions (auto-discovered from `skills/*.js`), loaded on demand by keyword matching:
+The agent brain can invoke tools via XML tags in its response:
 
-| Skill | Type | Domain |
-|-------|------|--------|
-| `google-calendar.js` | Companion | Google Calendar API |
-| `gmail-reader.js` | Companion | Gmail API |
-| `health-monitor.js` | Companion | System health checks |
-| `scrapling.js` | Companion | Web scraping via Scrapling |
-| `screenshot.js` | Companion | Desktop screenshot capture |
-| `web-scraping.md` | Document | Web scraping strategies |
-| `prompt-engineering.md` | Document | Prompt optimization |
-| And more... | Document | Context management, DB backup, git sync, etc. |
+```xml
+<tool_call name="generate_asset"></tool_call>
+<tool_call name="file_read">{"path": "lib/config.js"}</tool_call>
+<tool_call name="shell_exec">{"command": "node test/run-all.js"}</tool_call>
+```
 
-## Plugins
+### Registered Tools
 
-| Plugin | Purpose |
-|--------|---------|
-| `command-logger` | Tracks slash command usage |
-| `activity-summary` | Daily message count + cost metrics |
-| `proposal-tracker` | Captures approval/rejection of agent proposals |
-| `cron-health` | Monitors cron job health patterns |
-| `auto-tag` | Auto-tagging conversations |
+| Tool | Rate Limit | Description |
+|------|-----------|-------------|
+| `file_read` | none | Read a file from the sela directory |
+| `file_write` | none | Write a file to the workspace directory (sandboxed) |
+| `shell_exec` | 2s | Execute a shell command (sandboxed, 30s timeout, no destructive ops) |
+| `generate_asset` | 60s | Generate next pending 3D asset via Blender MCP |
+| `asset_progress` | 5s | Get asset pipeline status report |
+
+Skill companions in `skills/*.js` register additional tools at startup.
 
 ---
 
@@ -450,8 +448,9 @@ Three interconnected learning mechanisms:
 - **Claude CLI** — authenticated via OAuth (`~/.claude/.credentials.json`)
 - **PM2** (recommended) — process management and auto-restart
 - **Vestige MCP** (optional) — persistent semantic memory
-- **QMD** (optional) — local document search with BM25 + vector embeddings + GPU reranking
-- **CUDA Toolkit** (optional) — GPU acceleration for QMD embeddings (RTX 4050+ recommended)
+- **QMD** (optional) — local document search with BM25 + vector embeddings
+- **Blender** (optional) — 3D asset generation via blender-mcp
+- **Unreal Engine 5** (optional) — game project automation via unreal-engine-mcp
 
 ## Installation
 
@@ -475,21 +474,21 @@ npm install
    TELEGRAM_CHAT_ID=<your-chat-id>
    DASHBOARD_SECRET=<dashboard-password>
    CLAUDE_MODEL=sonnet
+   AGENT_LOOP_SONNET_MODEL=opus
    ```
 
-   All 145+ tunable parameters have sensible defaults. See `lib/config.js` for the full list.
-
-3. (Optional) Configure MCP servers in `mcp-config.json`:
+3. Configure MCP servers in `mcp-config.json`:
    ```json
    {
      "mcpServers": {
        "vestige": { "command": "vestige-mcp" },
-       "qmd": { "command": "qmd", "args": ["mcp"] }
+       "qmd": { "command": "qmd", "args": ["mcp"] },
+       "blender": { "command": "python", "args": ["-m", "blender_mcp.server"] },
+       "vfx-mcp": { "command": "python", "args": ["workspace/vfx-mcp/main.py"] },
+       "unreal": { "command": "python", "args": ["workspace/unreal-engine-mcp/src/server.py"] }
      }
    }
    ```
-   The multi-server gateway connects lazily — servers are only spawned when first used. Add any MCP-compatible server and call it via `callTool('server-name', 'tool', args)`.
-
 
 4. (Optional) Customize personality in `SOUL.md`.
 
@@ -508,20 +507,41 @@ pm2 start ecosystem.config.cjs
 pm2 save
 ```
 
-## Dashboard
+## Project Structure
 
-Web dashboard at `http://localhost:4242`:
-
-- **System status** — uptime, memory, queue, connections
-- **Agent loop monitor** — real-time signals, Claude spawns, actions, goal events
-- **Cost analytics** — daily spend, budget progress, 7-day trends
-- **Cron manager** — view, toggle, trigger jobs
-- **Projects** — create from brief, track goals + milestones, auto-QMD indexing
-- **Memory browser** — search Vestige, ingest facts
-- **Module pages** — dynamically added by loaded modules
-- **Live updates** — WebSocket push, real-time event toasts
-
-Start separately: `node dashboard.js`
+```
+sela/
+├── index.js                # Entry point — boots all subsystems
+├── dashboard.js            # Web dashboard server (port 4242)
+├── SOUL.md                 # Bot personality (auto-rewritten weekly)
+├── ecosystem.config.cjs    # PM2 config (sela + watchdog + dashboard)
+├── mcp-config.json         # MCP server registry (7 servers)
+├── lib/                    # Core modules (70+)
+│   ├── agent-loop.js       # Main agent brain
+│   ├── agent-signals.js    # 23+ signal detectors
+│   ├── auto-coder.js       # Autonomous code implementation
+│   ├── asset-pipeline.js   # 3D asset generation via Blender MCP
+│   ├── mcp-gateway.js      # Multi-server MCP gateway
+│   ├── projects.js         # Project decomposition + workspace mgmt
+│   ├── tool-bridge.js      # Tool registry (5 built-in + skill companions)
+│   └── ...
+├── modules/                # Optional modules (auto-discovered)
+│   └── hattrick/           # Football team management module
+├── skills/                 # Skill documents + JS companions
+├── plugins/                # Dynamic plugins
+├── test/                   # Test suite (49 tests, 27 suites)
+├── scripts/                # Utility scripts
+├── data/                   # Runtime data (gitignored)
+│   ├── sela.db             # SQLite (goals, kv_state, costs, errors)
+│   ├── goals.json          # Goal tracking (synced with SQLite)
+│   └── state/              # Module + agent state
+├── workspace/              # Project workspaces
+│   ├── shattered-crown/    # UE5 game (129 source files, 54 assets)
+│   ├── vfx-mcp/            # VFX MCP server
+│   └── unreal-engine-mcp/  # Unreal MCP server
+├── auth/                   # WhatsApp auth state (gitignored)
+└── logs/                   # Pino log files (gitignored)
+```
 
 ## Telegram Commands
 
@@ -536,43 +556,6 @@ Start separately: `node dashboard.js`
 | `/recap` | Daily activity summary |
 | `/shutdown` | Graceful shutdown |
 | `/help` | All commands |
-
-## Project Structure
-
-```
-sela/
-├── index.js                # Entry point — boots all subsystems
-├── dashboard.js            # Web dashboard server (port 4242)
-├── SOUL.md                 # Bot personality definition (auto-rewritten weekly)
-├── .env.example            # Environment variable template
-├── ecosystem.config.cjs    # PM2 configuration (sela + watchdog + dashboard)
-├── mcp-config.json         # MCP server configuration
-├── lib/                    # Core modules
-│   ├── module-loader.js    # Dynamic module discovery and registry
-│   ├── agent-loop.js       # Main agent brain + QMD auto-sync
-│   ├── agent-signals.js    # Core signal detectors
-│   ├── mcp-gateway.js      # Multi-server MCP gateway (Vestige, QMD, etc.)
-│   ├── projects.js         # Project decomposition + workspace management
-│   └── ...                 # 70+ other modules
-├── modules/                # Optional modules (auto-discovered at startup)
-│   └── my-module/
-│       ├── index.js        # Module manifest (default export)
-│       ├── signals.js      # Signal detectors
-│       └── ...             # Module-specific files
-├── skills/                 # Skill documents + companions
-├── plugins/                # Dynamic plugins
-├── test/                   # Test suite
-├── scripts/                # Utility scripts
-├── data/                   # Runtime data (gitignored)
-│   ├── sela.db             # SQLite database (goals, kv_state, costs, errors)
-│   ├── goals.json          # Goal tracking (synced with SQLite)
-│   ├── state/              # Module state files, agent state
-│   ├── cycle-diffs/        # Agent cycle diffs for review
-│   └── workflows/          # Active workflow state
-├── auth/                   # WhatsApp auth state (gitignored)
-├── logs/                   # Pino log files (gitignored)
-└── workspace/              # Project workspaces + sandboxed tool-bridge writes
-```
 
 ## Tests
 
