@@ -1,0 +1,196 @@
+/**
+ * Challenge Master Doran — NPC 9999056
+ * Location: Henesys (100000000)
+ * Type: Daily Challenge NPC
+ *
+ * Gives players a randomly-selected daily challenge.
+ * Uses a date-based seed so all players get the same challenge each day,
+ * but the challenge changes every 24 hours.
+ *
+ * Challenges scale by level brackets:
+ *   Lv 1-20:   Kill beginner mobs, collect beginner drops
+ *   Lv 21-50:  Kill mid mobs, collect mid drops
+ *   Lv 51-100: Kill advanced mobs, collect rare drops
+ *   Lv 100+:   Kill bosses, collect boss drops
+ *
+ * Rewards: EXP, mesos, potions, scrolls based on tier.
+ * Cooldown: 1 challenge per day (tracked via quest state).
+ *
+ * Uses quest IDs 99010 (active) and 99011 (completed-today marker).
+ * The "completed-today" check uses a KV marker item approach:
+ *   Item 4001101 = "Daily Challenge Token" (marker, quantity = day-of-year)
+ */
+var status = 0;
+var challengeIndex = -1;
+
+// Daily challenge quest IDs
+var QUEST_ACTIVE = 99010;
+
+// Marker item for "already completed today"
+var DAILY_MARKER = 4001101;
+
+// ── Challenge definitions per tier ──────────────────────────────────────
+// Each challenge: { desc, mobName, reqItem, reqQty, expReward, mesoReward, itemReward, itemRewardQty, itemRewardName }
+var tierLow = [
+    { desc: "Hunt 30 Snails and collect their shells",  reqItem: 4000019, reqQty: 30, expReward: 2000,  mesoReward: 5000,   itemReward: 2000002, itemRewardQty: 20, itemRewardName: "White Potion" },
+    { desc: "Gather 20 Mushroom Spores from the forest", reqItem: 4000003, reqQty: 20, expReward: 2500,  mesoReward: 4000,   itemReward: 2000001, itemRewardQty: 30, itemRewardName: "Orange Potion" },
+    { desc: "Collect 25 Blue Snail Shells",              reqItem: 4000000, reqQty: 25, expReward: 1800,  mesoReward: 6000,   itemReward: 2000003, itemRewardQty: 15, itemRewardName: "Blue Potion" },
+    { desc: "Bring 15 Pig's Ribbons from Pig Beach",     reqItem: 4000002, reqQty: 15, expReward: 3000,  mesoReward: 5000,   itemReward: 2000000, itemRewardQty: 50, itemRewardName: "Red Potion" }
+];
+
+var tierMid = [
+    { desc: "Hunt Horny Mushrooms and collect 20 caps",   reqItem: 4000015, reqQty: 20, expReward: 12000, mesoReward: 15000,  itemReward: 2000002, itemRewardQty: 30, itemRewardName: "White Potion" },
+    { desc: "Gather 15 Wild Boar Tusks from Perion",      reqItem: 4000020, reqQty: 15, expReward: 15000, mesoReward: 20000,  itemReward: 2000006, itemRewardQty: 10, itemRewardName: "Mana Elixir" },
+    { desc: "Collect 25 Zombie Mushroom Caps",             reqItem: 4000022, reqQty: 25, expReward: 18000, mesoReward: 18000,  itemReward: 2000004, itemRewardQty: 5,  itemRewardName: "Elixir" },
+    { desc: "Bring 10 Fire Boar Flames",                   reqItem: 4000021, reqQty: 10, expReward: 20000, mesoReward: 25000,  itemReward: 2000006, itemRewardQty: 15, itemRewardName: "Mana Elixir" }
+];
+
+var tierHigh = [
+    { desc: "Hunt Drakes and collect 15 Drake Skulls",     reqItem: 4001012, reqQty: 15, expReward: 60000,  mesoReward: 50000,  itemReward: 2000005, itemRewardQty: 10, itemRewardName: "Power Elixir" },
+    { desc: "Gather 10 Tauromacis Horns",                  reqItem: 4000049, reqQty: 10, expReward: 80000,  mesoReward: 60000,  itemReward: 2000005, itemRewardQty: 15, itemRewardName: "Power Elixir" },
+    { desc: "Collect 20 Curse Eye Tails",                  reqItem: 4000017, reqQty: 20, expReward: 50000,  mesoReward: 45000,  itemReward: 2000004, itemRewardQty: 10, itemRewardName: "Elixir" },
+    { desc: "Bring 8 pieces of Ancient Scroll",            reqItem: 4001013, reqQty: 8,  expReward: 75000,  mesoReward: 70000,  itemReward: 2000005, itemRewardQty: 12, itemRewardName: "Power Elixir" }
+];
+
+var tierBoss = [
+    { desc: "Defeat Jr. Balrog and bring 3 Dark Crystals", reqItem: 4000010, reqQty: 3,  expReward: 300000, mesoReward: 200000, itemReward: 2040004, itemRewardQty: 1,  itemRewardName: "Weapon ATT 60% Scroll" },
+    { desc: "Hunt Taurospears for 5 Golden Horns",         reqItem: 4000050, reqQty: 5,  expReward: 250000, mesoReward: 150000, itemReward: 2000005, itemRewardQty: 30, itemRewardName: "Power Elixir" },
+    { desc: "Collect 10 Cold Eye Tails",                   reqItem: 4000018, reqQty: 10, expReward: 200000, mesoReward: 180000, itemReward: 2040004, itemRewardQty: 1,  itemRewardName: "Weapon ATT 60% Scroll" },
+    { desc: "Bring 3 Mushmom Spores from Mushmom",        reqItem: 4000003, reqQty: 50, expReward: 350000, mesoReward: 250000, itemReward: 2000005, itemRewardQty: 50, itemRewardName: "Power Elixir" }
+];
+
+function getDayOfYear() {
+    var now = new java.util.Date();
+    var cal = java.util.Calendar.getInstance();
+    cal.setTime(now);
+    return cal.get(java.util.Calendar.DAY_OF_YEAR) + cal.get(java.util.Calendar.YEAR) * 1000;
+}
+
+function getTierForLevel(level) {
+    if (level <= 20) return tierLow;
+    if (level <= 50) return tierMid;
+    if (level <= 100) return tierHigh;
+    return tierBoss;
+}
+
+function getTierName(level) {
+    if (level <= 20) return "Beginner";
+    if (level <= 50) return "Intermediate";
+    if (level <= 100) return "Advanced";
+    return "Elite";
+}
+
+function getTodayChallenge(level) {
+    var tier = getTierForLevel(level);
+    var dayKey = getDayOfYear();
+    var index = dayKey % tier.length;
+    challengeIndex = index;
+    return tier[index];
+}
+
+function hasCompletedToday() {
+    var dayKey = getDayOfYear();
+    try {
+        var record = cm.getQuestRecord(QUEST_ACTIVE);
+        var data = record.getCustomData();
+        if (data == null) return false;
+        return parseInt(data) === dayKey;
+    } catch(e) {
+        return false;
+    }
+}
+
+function markCompletedToday() {
+    try {
+        var dayKey = getDayOfYear();
+        var record = cm.getQuestRecord(QUEST_ACTIVE);
+        record.setCustomData("" + dayKey);
+    } catch(e) {
+        // If quest system fails, still give reward — better to be generous
+    }
+}
+
+function start() {
+    status = 0;
+    var level = cm.getPlayer().getLevel();
+
+    if (hasCompletedToday()) {
+        cm.sendOk("#b[Challenge Master Doran]#k\r\n*checks ledger*\r\n\r\nYou've already completed today's challenge. Impressive work!\r\n\r\nCome back #btomorrow#k for a new challenge. Each day brings a different trial.\r\n\r\n#e" + getTierName(level) + " tier#n — your challenges scale with your strength.");
+        cm.dispose();
+        return;
+    }
+
+    cm.sendNext("#b[Challenge Master Doran]#k\r\n*adjusts monocle*\r\n\r\nWell, well! Another brave soul seeking glory. I'm Doran — former adventurer, current keeper of the #rDaily Challenge Ledger#k.\r\n\r\nEvery day, I post one challenge suited to your strength. Complete it, and the rewards are... let's say... #bwell worth your time#k.\r\n\r\nYour tier: #e" + getTierName(level) + "#n (Lv. " + level + ")");
+}
+
+function action(mode, type, selection) {
+    if (mode == -1) {
+        cm.dispose();
+        return;
+    }
+    if (mode == 0 && status == 0) {
+        cm.dispose();
+        return;
+    }
+
+    status++;
+
+    if (status == 1) {
+        var menu = "What would you like to do?\r\n";
+        menu += "#L0##b View today's challenge#k#l\r\n";
+        menu += "#L1##b Turn in challenge#k#l\r\n";
+        menu += "#L2##b How does this work?#k#l\r\n";
+        menu += "#L3##b Not today#k#l";
+        cm.sendSimple(menu);
+
+    } else if (status == 2) {
+        if (selection == 3) {
+            cm.sendOk("The challenge will be here until midnight. Don't wait too long — tomorrow brings a new one!");
+            cm.dispose();
+            return;
+        }
+
+        if (selection == 2) {
+            cm.sendOk("#b[How Daily Challenges Work]#k\r\n\r\n#e1.#n Each day I post ONE challenge based on your level tier.\r\n\r\n#e2.#n Collect the required items from monsters and bring them to me.\r\n\r\n#e3.#n I'll take the items and reward you with #bEXP#k, #bmesos#k, and #buseful items#k.\r\n\r\n#e4.#n You can complete ONE challenge per day. Challenges reset at midnight.\r\n\r\n#eTiers:#n\r\n  Lv 1-20: Beginner challenges\r\n  Lv 21-50: Intermediate challenges\r\n  Lv 51-100: Advanced challenges\r\n  Lv 100+: Elite challenges\r\n\r\nThe higher your tier, the greater the rewards!");
+            cm.dispose();
+            return;
+        }
+
+        var level = cm.getPlayer().getLevel();
+        var ch = getTodayChallenge(level);
+
+        if (selection == 0) {
+            // View today's challenge
+            cm.sendOk("#b[Today's " + getTierName(level) + " Challenge]#k\r\n\r\n#r" + ch.desc + "#k\r\n\r\nRequired: #b" + ch.reqQty + "x #t" + ch.reqItem + "##k\r\n\r\n#eRewards:#n\r\n  #i" + ch.itemReward + "# " + ch.itemRewardQty + "x " + ch.itemRewardName + "\r\n  " + ch.expReward + " EXP\r\n  " + ch.mesoReward + " mesos\r\n\r\nGo hunt, then come back and select #bTurn in challenge#k!");
+            cm.dispose();
+            return;
+        }
+
+        if (selection == 1) {
+            // Turn in
+            if (!cm.haveItem(ch.reqItem, ch.reqQty)) {
+                cm.sendOk("#b[Challenge Incomplete]#k\r\n\r\nYou need #r" + ch.reqQty + "x #t" + ch.reqItem + "##k to complete today's challenge.\r\n\r\nYou don't have enough yet. Keep hunting!");
+                cm.dispose();
+                return;
+            }
+
+            // Check inventory space for reward
+            if (!cm.canHold(ch.itemReward, ch.itemRewardQty)) {
+                cm.sendOk("Your inventory is full! Make some room for your reward and come back.");
+                cm.dispose();
+                return;
+            }
+
+            // Complete the challenge!
+            cm.gainItem(ch.reqItem, -ch.reqQty);
+            cm.gainExp(ch.expReward);
+            cm.gainMeso(ch.mesoReward);
+            cm.gainItem(ch.itemReward, ch.itemRewardQty);
+            markCompletedToday();
+
+            cm.sendOk("#b[Challenge Complete!]#k\r\n\r\n*stamps ledger with golden seal*\r\n\r\nMagnificent! You've completed today's " + getTierName(level) + " challenge!\r\n\r\n#eRewards received:#n\r\n  " + ch.expReward + " EXP\r\n  " + ch.mesoReward + " mesos\r\n  " + ch.itemRewardQty + "x " + ch.itemRewardName + "\r\n\r\nCome back #btomorrow#k for a new challenge. Each day is different!\r\n\r\n*writes your name in golden ink*");
+            cm.dispose();
+            return;
+        }
+    }
+}

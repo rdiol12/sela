@@ -1,0 +1,35 @@
+node_modules/
+auth/
+data/
+logs/
+workspace/
+.env
+qr.png
+mcp-config.json
+*.db
+*.db-wal
+*.db-shm
+tmp*.js
+tmp*.cjs
+tmp*.mjs
+nul
+__pycache__/
+.agentchat/daemons/
+.fastembed_cache/
+auth_info/
+auth-backup-*/
+*.session
+
+# Test scripts (not part of the system)
+test-bot-*.mjs
+test-spawn*.mjs
+npc_*.js
+*_test.js
+*.log
+
+# Auth & secrets
+auth_info/
+auth-backup-*/
+
+# Large caches
+.fastembed_cache/

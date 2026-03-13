@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "ludo": {
+      "type": "streamable-http",
+      "url": "https://mcp.ludo.ai/mcp",
+      "headers": {
+        "Authorization": "ApiKey ${LUDO_API_KEY}"
+      }
+    }
+  }
+}

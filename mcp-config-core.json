@@ -1,0 +1,42 @@
+{
+  "mcpServers": {
+    "vestige": {
+      "command": "C:/Users/rdiol/bin/vestige-mcp.exe",
+      "args": []
+    },
+    "bot-ops": {
+      "command": "node",
+      "args": ["C:/Users/rdiol/sela/lib/bot-mcp-server.js"]
+    },
+    "scrapling": {
+      "command": "C:/Users/rdiol/AppData/Local/Programs/Python/Python312/Scripts/scrapling.exe",
+      "args": ["mcp"],
+      "env": {
+        "SSL_CERT_FILE": "C:/Users/rdiol/.ssl/cacert.pem",
+        "CURL_CA_BUNDLE": "C:/Users/rdiol/.ssl/cacert.pem"
+      }
+    },
+    "qmd": {
+      "command": "C:/Program Files/Git/usr/bin/bash.exe",
+      "args": ["C:/Users/rdiol/sela/node_modules/@tobilu/qmd/qmd", "mcp"]
+    },
+    "hattrick": {
+      "command": "C:/Users/rdiol/AppData/Local/Programs/Python/Python312/python.exe",
+      "args": ["C:/Users/rdiol/sela/skills/hattrick-mcp.py"],
+      "env": {
+        "SSL_CERT_FILE": "C:/Users/rdiol/.ssl/cacert.pem",
+        "CURL_CA_BUNDLE": "C:/Users/rdiol/.ssl/cacert.pem",
+        "HATTRICK_USERNAME": "${HATTRICK_USERNAME}",
+        "HATTRICK_PASSWORD": "${HATTRICK_PASSWORD}",
+        "HATTRICK_TEAM_ID": "${HATTRICK_TEAM_ID}"
+      }
+    },
+    "harepacker-mcp": {
+      "command": "C:/Users/rdiol/sela/workspace/WzImg-MCP-Server/WzImgMCP/bin/Debug/net8.0-windows/WzImgMCP.exe",
+      "args": [],
+      "env": {
+        "WZIMGMCP_DATA_PATH": "C:/Users/rdiol/sela/workspace/v83-img-data"
+      }
+    }
+  }
+}

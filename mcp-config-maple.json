@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "vestige": {
+      "command": "C:/Users/rdiol/bin/vestige-mcp.exe",
+      "args": []
+    },
+    "bot-ops": {
+      "command": "node",
+      "args": ["C:/Users/rdiol/sela/lib/bot-mcp-server.js"]
+    },
+    "harepacker-mcp": {
+      "command": "C:/Users/rdiol/sela/workspace/WzImg-MCP-Server/WzImgMCP/bin/Debug/net8.0-windows/WzImgMCP.exe",
+      "args": [],
+      "env": {
+        "WZIMGMCP_DATA_PATH": "C:/Users/rdiol/sela/workspace/v83-img-data"
+      }
+    },
+    "qmd": {
+      "command": "C:/Program Files/Git/usr/bin/bash.exe",
+      "args": ["C:/Users/rdiol/sela/node_modules/@tobilu/qmd/qmd", "mcp"]
+    }
+  }
+}
